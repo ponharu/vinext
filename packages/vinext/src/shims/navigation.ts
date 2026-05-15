@@ -297,7 +297,14 @@ export type CachedRscResponse = {
   url: string;
 };
 
+export type PrefetchOptions = {
+  kind?: unknown;
+  onInvalidate?: () => void;
+};
+
 export type PrefetchCacheEntry = {
+  invalidationTimer?: ReturnType<typeof setTimeout>;
+  onInvalidateCallbacks?: Set<() => void>;
   outcome: "pending" | "cache-seeded";
   snapshot?: CachedRscResponse;
   pending?: Promise<void>;
@@ -354,20 +361,118 @@ function evictPrefetchCacheIfNeeded(): void {
 
   for (const [key, entry] of cache) {
     if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
-      cache.delete(key);
-      prefetched.delete(key);
+      deletePrefetchCacheEntry(cache, prefetched, key, entry, true);
     }
   }
 
   while (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) {
-      cache.delete(oldest);
-      prefetched.delete(oldest);
+      const entry = cache.get(oldest);
+      if (entry) {
+        deletePrefetchCacheEntry(cache, prefetched, oldest, entry, true);
+      } else {
+        cache.delete(oldest);
+        prefetched.delete(oldest);
+      }
     } else {
       break;
     }
   }
+}
+
+function clearPrefetchInvalidation(entry: PrefetchCacheEntry): void {
+  if (entry.invalidationTimer !== undefined) {
+    clearTimeout(entry.invalidationTimer);
+    entry.invalidationTimer = undefined;
+  }
+}
+
+function notifyPrefetchInvalidated(entry: PrefetchCacheEntry): void {
+  clearPrefetchInvalidation(entry);
+  const callbacks = entry.onInvalidateCallbacks;
+  entry.onInvalidateCallbacks = undefined;
+  if (callbacks === undefined) return;
+
+  for (const onInvalidate of callbacks) {
+    try {
+      onInvalidate();
+    } catch (error) {
+      if (typeof reportError === "function") {
+        reportError(error);
+      } else {
+        console.error(error);
+      }
+    }
+  }
+}
+
+function deletePrefetchCacheEntry(
+  cache: Map<string, PrefetchCacheEntry>,
+  prefetched: Set<string>,
+  cacheKey: string,
+  entry: PrefetchCacheEntry,
+  notify: boolean,
+): void {
+  cache.delete(cacheKey);
+  prefetched.delete(cacheKey);
+  if (notify) {
+    notifyPrefetchInvalidated(entry);
+  } else {
+    clearPrefetchInvalidation(entry);
+    entry.onInvalidateCallbacks = undefined;
+  }
+}
+
+function invalidatePrefetchCacheEntry(cacheKey: string): void {
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (!entry) return;
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+}
+
+function schedulePrefetchInvalidation(cacheKey: string, entry: PrefetchCacheEntry): void {
+  if (entry.onInvalidateCallbacks === undefined || entry.onInvalidateCallbacks.size === 0) return;
+
+  clearPrefetchInvalidation(entry);
+  const elapsed = Date.now() - entry.timestamp;
+  const delay = Math.max(0, PREFETCH_CACHE_TTL - elapsed);
+  entry.invalidationTimer = setTimeout(() => {
+    invalidatePrefetchCacheEntry(cacheKey);
+  }, delay);
+}
+
+function addPrefetchInvalidationCallback(
+  entry: PrefetchCacheEntry,
+  onInvalidate: (() => void) | undefined,
+): void {
+  if (onInvalidate === undefined) return;
+  if (entry.onInvalidateCallbacks === undefined) {
+    entry.onInvalidateCallbacks = new Set();
+  }
+  entry.onInvalidateCallbacks.add(onInvalidate);
+}
+
+function attachPrefetchInvalidationCallback(
+  cacheKey: string,
+  onInvalidate: (() => void) | undefined,
+): void {
+  if (onInvalidate === undefined) return;
+  const entry = getPrefetchCache().get(cacheKey);
+  if (!entry) return;
+  addPrefetchInvalidationCallback(entry, onInvalidate);
+  if (entry.outcome === "cache-seeded") {
+    schedulePrefetchInvalidation(cacheKey, entry);
+  }
+}
+
+export function invalidatePrefetchCache(): void {
+  const cache = getPrefetchCache();
+  const prefetched = getPrefetchedUrls();
+  for (const [cacheKey, entry] of cache) {
+    deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, true);
+  }
+  prefetched.clear();
 }
 
 /**
@@ -390,21 +495,27 @@ export function storePrefetchResponse(
   rscUrl: string,
   response: Response,
   interceptionContext: string | null = null,
+  options?: PrefetchOptions,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   evictPrefetchCacheIfNeeded();
-  const entry: PrefetchCacheEntry = { outcome: "pending", timestamp: Date.now() };
+  const entry: PrefetchCacheEntry = {
+    outcome: "pending",
+    timestamp: Date.now(),
+  };
+  addPrefetchInvalidationCallback(entry, options?.onInvalidate);
   entry.pending = snapshotRscResponse(response)
     .then((snapshot) => {
       entry.snapshot = snapshot;
     })
     .catch(() => {
-      getPrefetchCache().delete(cacheKey);
+      deletePrefetchCacheEntry(getPrefetchCache(), getPrefetchedUrls(), cacheKey, entry, false);
     })
     .finally(() => {
       entry.pending = undefined;
       if (entry.snapshot) {
         entry.outcome = "cache-seeded";
+        schedulePrefetchInvalidation(cacheKey, entry);
       }
     });
   getPrefetchCache().set(cacheKey, entry);
@@ -478,13 +589,18 @@ export function prefetchRscResponse(
   fetchPromise: Promise<Response>,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
+  options?: PrefetchOptions,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
   const prefetched = getPrefetchedUrls();
   const now = Date.now();
 
-  const entry: PrefetchCacheEntry = { outcome: "pending", timestamp: now };
+  const entry: PrefetchCacheEntry = {
+    outcome: "pending",
+    timestamp: now,
+  };
+  addPrefetchInvalidationCallback(entry, options?.onInvalidate);
 
   entry.pending = fetchPromise
     .then(async (response) => {
@@ -496,18 +612,17 @@ export function prefetchRscResponse(
           mountedSlotsHeader,
         };
       } else {
-        prefetched.delete(cacheKey);
-        cache.delete(cacheKey);
+        deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
       }
     })
     .catch(() => {
-      prefetched.delete(cacheKey);
-      cache.delete(cacheKey);
+      deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
     })
     .finally(() => {
       entry.pending = undefined;
       if (entry.snapshot) {
         entry.outcome = "cache-seeded";
+        schedulePrefetchInvalidation(cacheKey, entry);
       }
     });
 
@@ -537,8 +652,7 @@ export function consumePrefetchResponse(
   // without a successful transition to a cache-seeded entry.
   if (entry.pending || entry.outcome !== "cache-seeded") return null;
 
-  cache.delete(cacheKey);
-  getPrefetchedUrls().delete(cacheKey);
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
 
   if (entry.snapshot) {
     if ((entry.snapshot.mountedSlotsHeader ?? null) !== mountedSlotsHeader) {
@@ -1306,7 +1420,7 @@ const _appRouter = {
       React.startTransition(navigate);
     }
   },
-  prefetch(href: string): void {
+  prefetch(href: string, options?: PrefetchOptions): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
     void (async () => {
@@ -1333,7 +1447,10 @@ const _appRouter = {
       const rscUrl = await createRscRequestUrl(fullHref, headers);
       const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
       const prefetched = getPrefetchedUrls();
-      if (prefetched.has(cacheKey)) return;
+      if (prefetched.has(cacheKey)) {
+        attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
+        return;
+      }
       prefetched.add(cacheKey);
       prefetchRscResponse(
         rscUrl,
@@ -1344,6 +1461,7 @@ const _appRouter = {
         }),
         interceptionContext,
         mountedSlotsHeader,
+        options,
       );
     })().catch((error) => {
       console.error("[vinext] RSC prefetch setup error:", error);
