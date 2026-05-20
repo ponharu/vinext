@@ -75,13 +75,17 @@ import {
   type AppWireElements,
 } from "./app-elements.js";
 import {
+  FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+  VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createHistoryStateWithNavigationMetadata,
   createHistoryStateWithPreviousNextUrl,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
+  isCacheRestorableAppPayloadMetadata,
   resolveHistoryTraversalIntent,
   resolveInterceptionContextFromPreviousNextUrl,
   resolveServerActionRequestState,
+  type AppNavigationPayloadOrigin,
   type AppRouterState,
   type HistoryTraversalIntent,
   type OperationLane,
@@ -443,6 +447,7 @@ async function renderNavigationPayload(
   params: Record<string, string | string[]>,
   previousNextUrl: string | null,
   pendingRouterState: PendingBrowserRouterState | null,
+  payloadOrigin: AppNavigationPayloadOrigin,
   actionType: "navigate" | "replace" | "traverse" = "navigate",
   operationLane: OperationLane = "navigation",
   traversalIntent: HistoryTraversalIntent | null = null,
@@ -458,6 +463,7 @@ async function renderNavigationPayload(
       navigationSnapshot,
       nextElements: payload,
       operationLane,
+      payloadOrigin,
       params,
       pendingRouterState,
       previousNextUrl,
@@ -1315,6 +1321,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             cachedParams,
             requestPreviousNextUrl,
             pendingRouterState,
+            VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
             toActionType(navigationKind),
             toOperationLane(navigationKind),
             activeTraversalIntent,
@@ -1471,6 +1478,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           navParams,
           requestPreviousNextUrl,
           pendingRouterState,
+          FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           toActionType(navigationKind),
           toOperationLane(navigationKind),
           activeTraversalIntent,
@@ -1485,6 +1493,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // never actually rendered successfully.
         const resolvedElements = await rscPayload;
         const metadata = AppElementsWire.readMetadata(resolvedElements);
+        if (!isCacheRestorableAppPayloadMetadata(metadata)) {
+          void cacheBufferPromise.catch(() => {});
+          return;
+        }
         const cacheBuffer = await cacheBufferPromise;
         storeVisitedResponseSnapshot(
           rscUrl,
