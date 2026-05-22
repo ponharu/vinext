@@ -65,6 +65,7 @@ import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-n
 import { navigatePagesRouterLink } from "../client/pages-router-link-navigation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { getCurrentBrowserLocale } from "./client-locale.js";
 
 type NavigateEvent = {
   url: URL;
@@ -424,7 +425,11 @@ function getDefaultLocale(): string | undefined {
 
 function getCurrentLocale(): string | undefined {
   if (typeof window !== "undefined") {
-    return window.__VINEXT_LOCALE__;
+    return getCurrentBrowserLocale({
+      basePath: __basePath,
+      domainLocales: getDomainLocales(),
+      hostname: getCurrentHostname(),
+    });
   }
   return getI18nContext()?.locale;
 }
@@ -449,6 +454,25 @@ function getDomainLocaleHref(href: string, locale: string): string | undefined {
     currentHostname: getCurrentHostname(),
     domainItems: getDomainLocales(),
   });
+}
+
+function addLocalePrefixForRoot(href: string, locale: string): string | undefined {
+  if (href !== "/" && !href.startsWith("/?") && !href.startsWith("/#")) {
+    return undefined;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(href, "http://vinext.local");
+  } catch {
+    return undefined;
+  }
+
+  if (parsed.origin !== "http://vinext.local" || parsed.pathname !== "/") {
+    return undefined;
+  }
+
+  return `/${locale}${parsed.search}${parsed.hash}`;
 }
 
 /**
@@ -479,7 +503,13 @@ function applyLocaleToHref(href: string, locale: string | false | undefined): st
     return domainLocaleHref;
   }
 
-  return addLocalePrefix(href, resolvedLocale, getDefaultLocale() ?? "");
+  const defaultLocale = getDefaultLocale() ?? "";
+  if (resolvedLocale.toLowerCase() === defaultLocale.toLowerCase()) {
+    const localeRootHref = addLocalePrefixForRoot(href, resolvedLocale);
+    if (localeRootHref) return localeRootHref;
+  }
+
+  return addLocalePrefix(href, resolvedLocale, defaultLocale);
 }
 
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
