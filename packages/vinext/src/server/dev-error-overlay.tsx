@@ -13,6 +13,7 @@
 import { Fragment, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
+import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import {
   type OverlayState,
@@ -37,9 +38,17 @@ export { dismissOverlay } from "./dev-error-overlay-store.js";
 export const DEV_ERROR_OVERLAY_HOST_ID = "__vinext_dev_error_overlay_root";
 export const DEV_ERROR_OVERLAY_MOUNT_ID = "__vinext_dev_error_overlay_mount";
 const VITE_ERROR_HANDLER_DATA_KEY = "__vinext_vite_error_handler__";
+const REACT_REFRESH_RECOVERY_RETRY_DELAY_MS = 16;
 
 let reactRoot: Root | null = null;
 let installed = false;
+
+type ReactRefreshWindow = Window &
+  typeof globalThis & {
+    __registerBeforePerformReactRefresh?: (cb: () => void | Promise<void>) => void;
+    __vinextReactRefreshErrorRecoveryInstalled?: boolean;
+    __vinextReactRefreshErrorRecoveryInstallScheduled?: boolean;
+  };
 
 // Errors React already routed through onCaughtError/onUncaughtError shouldn't
 // also surface from the window listeners — otherwise the same throw appears
@@ -56,7 +65,11 @@ function alreadyReported(error: unknown): boolean {
 }
 
 export function installDevErrorOverlay(): void {
-  if (installed || typeof window === "undefined") return;
+  if (typeof window === "undefined") return;
+
+  installReactRefreshErrorRecovery();
+
+  if (installed) return;
   installed = true;
 
   window.addEventListener("error", (event: ErrorEvent) => {
@@ -80,6 +93,57 @@ export function installDevErrorOverlay(): void {
       reportDevError(new Error(String(reason)), { source: "unhandledrejection" });
     }
   });
+}
+
+export function installReactRefreshErrorRecovery(): void {
+  if (typeof window === "undefined") return;
+  if (tryInstallReactRefreshErrorRecovery()) return;
+
+  const refreshWindow = window as ReactRefreshWindow;
+  if (refreshWindow.__vinextReactRefreshErrorRecoveryInstallScheduled) return;
+  refreshWindow.__vinextReactRefreshErrorRecoveryInstallScheduled = true;
+
+  let timeoutPending = false;
+  const scheduleTimeoutRetry = (delay: number): void => {
+    if (timeoutPending) return;
+    timeoutPending = true;
+    window.setTimeout(() => {
+      timeoutPending = false;
+      retry();
+    }, delay);
+  };
+
+  function retry(): void {
+    if (tryInstallReactRefreshErrorRecovery()) {
+      refreshWindow.__vinextReactRefreshErrorRecoveryInstallScheduled = false;
+      return;
+    }
+    scheduleTimeoutRetry(REACT_REFRESH_RECOVERY_RETRY_DELAY_MS);
+  }
+
+  if (typeof queueMicrotask === "function") {
+    queueMicrotask(retry);
+  } else {
+    void Promise.resolve().then(retry);
+  }
+  scheduleTimeoutRetry(0);
+}
+
+function tryInstallReactRefreshErrorRecovery(): boolean {
+  if (typeof window === "undefined") return false;
+
+  const refreshWindow = window as ReactRefreshWindow;
+  if (refreshWindow.__vinextReactRefreshErrorRecoveryInstalled) return true;
+
+  const register = refreshWindow.__registerBeforePerformReactRefresh;
+  if (typeof register !== "function") return false;
+
+  refreshWindow.__vinextReactRefreshErrorRecoveryInstalled = true;
+  register(() => {
+    window.dispatchEvent(new Event(VINEXT_DEV_ERROR_RECOVERY_EVENT));
+    dismissOverlay();
+  });
+  return true;
 }
 
 export function reportInitialDevServerErrors(): void {
@@ -152,6 +216,10 @@ function isViteHmrHotContext(value: unknown): value is ViteHmrHotContext {
 
 function reportViteHmrError(payload: ViteHmrErrorPayload): void {
   const normalized = normalizeViteHmrError(payload);
+  // Vite build errors describe the current failed HMR update, so they replace
+  // the whole overlay snapshot instead of stacking with older runtime or Vite
+  // errors from previous edits.
+  dismissOverlay();
   reportDevError(normalized.message, { source: "vite" });
 }
 
