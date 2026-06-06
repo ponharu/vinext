@@ -375,6 +375,10 @@ function shouldReadAppPageCache(options: {
   );
 }
 
+function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
+  return searchParams !== null && searchParams !== undefined && searchParams.size > 0;
+}
+
 function buildAppPageTags(
   cleanPathname: string,
   extraTags: string[],
@@ -523,6 +527,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
+      hasRequestSearchParams: !isForceStatic && hasSearchParams(options.searchParams),
       isEdgeRuntime: options.isEdgeRuntime,
       isRscRequest: options.isRscRequest,
       isrDebug: options.isrDebug,

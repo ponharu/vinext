@@ -283,7 +283,7 @@ import {
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
-import { probeAppPage as __probeAppPage } from ${JSON.stringify(appPageProbePath)};
+import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
@@ -669,11 +669,16 @@ export default __createAppRscHandler({
         });
       },
       probePage() {
-        return __probeAppPage({
+        return Promise.all(__buildAppPageProbes({
+          route,
           pageComponent: PageComponent,
           asyncRouteParams: _asyncRouteParams,
           searchParams,
-        });
+          intercept: findIntercept(cleanPathname, interceptionContext),
+          isRscRequest,
+          matchedParams: params,
+          makeThenableParams,
+        }));
       },
       renderErrorBoundaryPage(renderErr) {
         return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, { isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime) });
