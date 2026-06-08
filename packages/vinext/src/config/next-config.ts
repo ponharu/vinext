@@ -224,6 +224,13 @@ export type NextConfig = {
   allowedDevOrigins?: string[];
   /** Maximum age in seconds for stale ISR entries before blocking regeneration. */
   expireTime?: number;
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during App Router SSR. React drops whole entries once the limit is
+   * exceeded; `0` disables emission entirely. Defaults to 6000.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/reactMaxHeadersLength
+   */
+  reactMaxHeadersLength?: number;
   /** User agents that require blocking metadata in the initial head. */
   htmlLimitedBots?: RegExp | string;
   /**
@@ -355,6 +362,11 @@ export type ResolvedNextConfig = {
   serverActionsBodySizeLimitLabel: string;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime: number;
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during App Router SSR. `0` disables emission. Defaults to 6000.
+   */
+  reactMaxHeadersLength: number;
   /** Serialized htmlLimitedBots regexp source from next.config. */
   htmlLimitedBots: string | undefined;
   /**
@@ -475,6 +487,13 @@ const CONFIG_FILES = [
   "next.config.cjs",
 ];
 const DEFAULT_EXPIRE_TIME = 31_536_000;
+
+/**
+ * Default cap for the App Router preload `Link` header length, matching the
+ * Next.js `defaultConfig.reactMaxHeadersLength`.
+ * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/reactMaxHeadersLength
+ */
+const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 
 /**
  * Check whether an error indicates a CJS module was loaded in an ESM context
@@ -1188,6 +1207,7 @@ export async function resolveNextConfig(
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
       expireTime: DEFAULT_EXPIRE_TIME,
+      reactMaxHeadersLength: DEFAULT_REACT_MAX_HEADERS_LENGTH,
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
@@ -1470,6 +1490,10 @@ export async function resolveNextConfig(
     serverActionsBodySizeLimit,
     serverActionsBodySizeLimitLabel,
     expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
+    reactMaxHeadersLength:
+      typeof config.reactMaxHeadersLength === "number"
+        ? config.reactMaxHeadersLength
+        : DEFAULT_REACT_MAX_HEADERS_LENGTH,
     htmlLimitedBots,
     serverExternalPackages,
     cacheHandler,
