@@ -776,6 +776,130 @@ describe("loadNextConfig with tsconfig path aliases", () => {
 });
 
 describe("resolveNextConfig alias extraction", () => {
+  it("prefers turbopack resolveExtensions and falls back to webpack extensions", async () => {
+    const fallback = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = ["", ".png", ".jsx", ".js"];
+        return webpackConfig;
+      },
+    });
+    expect(fallback.resolveExtensions).toEqual(["", ".png", ".jsx", ".js"]);
+    expect(fallback.serverResolveExtensions).toEqual(["", ".png", ".jsx", ".js"]);
+
+    const preferred = await resolveNextConfig({
+      turbopack: { resolveExtensions: ["", ".web.tsx", ".tsx"] },
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = ["", ".png", ".js"];
+        return webpackConfig;
+      },
+    });
+    expect(preferred.resolveExtensions).toEqual(["", ".web.tsx", ".tsx"]);
+    expect(preferred.serverResolveExtensions).toEqual(["", ".web.tsx", ".tsx"]);
+
+    const explicitlyEmpty = await resolveNextConfig({
+      turbopack: { resolveExtensions: [] },
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [".png"];
+        return webpackConfig;
+      },
+    });
+    expect(explicitlyEmpty.resolveExtensions).toEqual([]);
+    expect(explicitlyEmpty.serverResolveExtensions).toEqual([]);
+  });
+
+  it("supports legacy experimental.turbo resolveExtensions", async () => {
+    const legacy = await resolveNextConfig({
+      experimental: {
+        turbo: { resolveExtensions: ["", ".legacy.ts", ".ts"] },
+      },
+    });
+    expect(legacy.resolveExtensions).toEqual(["", ".legacy.ts", ".ts"]);
+    expect(legacy.serverResolveExtensions).toEqual(["", ".legacy.ts", ".ts"]);
+
+    const preferred = await resolveNextConfig({
+      experimental: {
+        turbo: { resolveExtensions: ["", ".legacy.ts", ".ts"] },
+      },
+      turbopack: { resolveExtensions: ["", ".modern.ts", ".ts"] },
+    });
+    expect(preferred.resolveExtensions).toEqual(["", ".modern.ts", ".ts"]);
+    expect(preferred.serverResolveExtensions).toEqual(["", ".modern.ts", ".ts"]);
+  });
+
+  it("provides Next.js webpack defaults to resolve.extensions callbacks", async () => {
+    const resolved = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [".web.tsx", ...webpackConfig.resolve.extensions];
+        return webpackConfig;
+      },
+    });
+    expect(resolved.resolveExtensions).toEqual([
+      ".web.tsx",
+      ".js",
+      ".mjs",
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".json",
+      ".wasm",
+    ]);
+  });
+
+  it("ignores untouched webpack resolve.extensions defaults", async () => {
+    const untouched = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        return webpackConfig;
+      },
+    });
+    expect(untouched.resolveExtensions).toBeNull();
+
+    const copied = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [...webpackConfig.resolve.extensions];
+        return webpackConfig;
+      },
+    });
+    expect(copied.resolveExtensions).toBeNull();
+  });
+
+  it("captures in-place webpack resolve.extensions mutations", async () => {
+    const resolved = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions.unshift(".web.tsx");
+        return webpackConfig;
+      },
+    });
+    expect(resolved.resolveExtensions).toEqual([
+      ".web.tsx",
+      ".js",
+      ".mjs",
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".json",
+      ".wasm",
+    ]);
+  });
+
+  it("preserves client/server and dev/build webpack resolve.extensions", async () => {
+    const webpack = (webpackConfig: any, options: any) => {
+      webpackConfig.resolve.extensions = [
+        options.isServer ? ".server.ts" : ".client.ts",
+        options.dev ? ".dev.ts" : ".prod.ts",
+        ".ts",
+      ];
+      return webpackConfig;
+    };
+
+    const build = await resolveNextConfig({ webpack });
+    expect(build.resolveExtensions).toEqual([".client.ts", ".prod.ts", ".ts"]);
+    expect(build.serverResolveExtensions).toEqual([".server.ts", ".prod.ts", ".ts"]);
+
+    const dev = await resolveNextConfig({ webpack }, process.cwd(), { dev: true });
+    expect(dev.resolveExtensions).toEqual([".client.ts", ".dev.ts", ".ts"]);
+    expect(dev.serverResolveExtensions).toEqual([".server.ts", ".dev.ts", ".ts"]);
+  });
+
   let tmpDir: string;
 
   afterEach(() => {
@@ -1039,14 +1163,14 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     }
   });
 
-  it("extracts aliases and mdx from a single async webpack probe", async () => {
+  it("extracts aliases and mdx while probing client and server webpack configs", async () => {
     tmpDir = makeTempDir();
 
-    let invocations = 0;
+    const invocations: boolean[] = [];
     const fakeRemarkPlugin = () => {};
     const rawConfig = {
-      webpack: async (webpackConfig: any) => {
-        invocations++;
+      webpack: async (webpackConfig: any, options: any) => {
+        invocations.push(options.isServer);
         webpackConfig.resolve = webpackConfig.resolve || {};
         webpackConfig.resolve.alias = webpackConfig.resolve.alias || {};
         webpackConfig.resolve.alias["wrapped/config"] = "./config/request.ts";
@@ -1068,7 +1192,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
 
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(invocations).toBe(1);
+    expect(invocations).toEqual([false, true]);
     expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "config", "request.ts"));
     expect(config.mdx?.remarkPlugins).toEqual([fakeRemarkPlugin]);
   });
@@ -1644,6 +1768,8 @@ describe("detectNextIntlConfig", () => {
       trailingSlash: false,
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
+      resolveExtensions: null,
+      serverResolveExtensions: null,
       cacheComponents: false,
       gestureTransition: false,
       prefetchInlining: false,

@@ -19,6 +19,7 @@ import { appRouteGraph, appRouter, invalidateAppRouteCache } from "./routing/app
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import {
   buildViteResolveExtensions,
+  normalizeViteResolveExtensions,
   createValidFileMatcher,
   findFileWithExts,
 } from "./routing/file-matcher.js";
@@ -1161,12 +1162,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             process.env[key] = value;
           }
         }
-        // Align NODE_ENV with Next.js semantics: build -> production, serve -> development.
-        // Next.js unconditionally forces NODE_ENV during build/dev, so we do the same.
+        // Align NODE_ENV with Next.js semantics: build/preview -> production,
+        // development server -> development. Next.js unconditionally forces
+        // NODE_ENV during build/dev, so we do the same.
         let resolvedNodeEnv: string;
         if (mode === "test") {
           resolvedNodeEnv = "test";
-        } else if (env?.command === "build") {
+        } else if (env?.command === "build" || env?.isPreview === true) {
           resolvedNodeEnv = "production";
         } else {
           resolvedNodeEnv = "development";
@@ -1231,7 +1233,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           } else {
             rawConfig = await loadNextConfig(root, phase);
           }
-          nextConfig = await resolveNextConfig(rawConfig, root);
+          nextConfig = await resolveNextConfig(rawConfig, root, {
+            dev: env?.command === "serve" && env?.isPreview !== true,
+          });
 
           // Build-ID coordination across plugin instances.
           //
@@ -1929,13 +1933,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...nextConfig.aliases,
               ...nextShimMap,
             },
-            // Mirror Next.js `pageExtensions` into Vite's `resolve.extensions`
-            // so extensionless imports of files with custom extensions
-            // (`.mdx`, `.platform.tsx`, `.web.tsx`, etc.) resolve. Without
-            // this the build crashes with "Custom deploy script failed:
-            // undefined (1)" when the user configures pageExtensions beyond
-            // Vite's default set. See cloudflare/vinext#1502.
-            extensions: buildViteResolveExtensions(nextConfig.pageExtensions),
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
@@ -2394,6 +2391,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         return viteConfig;
+      },
+
+      configEnvironment(name, config) {
+        const configuredExtensions =
+          name === "client" ? nextConfig.resolveExtensions : nextConfig.serverResolveExtensions;
+        const extensions =
+          configuredExtensions === null
+            ? buildViteResolveExtensions(nextConfig.pageExtensions, config.resolve?.extensions)
+            : normalizeViteResolveExtensions(configuredExtensions);
+        config.resolve ??= {};
+        config.resolve.extensions = extensions;
+        return null;
       },
 
       configResolved(config) {
