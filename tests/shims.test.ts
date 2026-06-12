@@ -1466,6 +1466,213 @@ describe("next/navigation shim", () => {
   });
 
   // -------------------------------------------------------------------------
+  // useUntrackedPathname
+  //
+  // Ported from Next.js:
+  //   https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/client/components/navigation-untracked.ts
+  // -------------------------------------------------------------------------
+  it("useUntrackedPathname returns '/' on server when no navigation context is set", async () => {
+    const { useUntrackedPathname } =
+      await import("../packages/vinext/src/shims/internal/navigation-untracked.js");
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    let captured: string | null = "";
+    function Probe() {
+      captured = useUntrackedPathname();
+      return React.createElement("span", null, captured ?? "null");
+    }
+
+    renderToStaticMarkup(React.createElement(Probe));
+    expect(captured).toBe("/");
+  });
+
+  it("useUntrackedPathname returns pathname from server context", async () => {
+    const { useUntrackedPathname } =
+      await import("../packages/vinext/src/shims/internal/navigation-untracked.js");
+    const { setNavigationContext } = await import("../packages/vinext/src/shims/navigation.js");
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    setNavigationContext({
+      pathname: "/untracked/test",
+      searchParams: new URLSearchParams(""),
+      params: {},
+    });
+
+    let captured: string | null = "";
+    function Probe() {
+      captured = useUntrackedPathname();
+      return React.createElement("span", null, captured ?? "null");
+    }
+
+    try {
+      renderToStaticMarkup(React.createElement(Probe));
+      expect(captured).toBe("/untracked/test");
+    } finally {
+      setNavigationContext(null);
+    }
+  });
+
+  it("useUntrackedPathname prefers render snapshot during active navigation", async () => {
+    const previousWindow = globalThis.window;
+    const win = {
+      addEventListener() {},
+      dispatchEvent() {
+        return true;
+      },
+      history: {
+        pushState() {},
+        replaceState() {},
+      },
+      location: {
+        href: "http://localhost/committed",
+        origin: "http://localhost",
+        pathname: "/committed",
+        search: "",
+      },
+      removeEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const { useUntrackedPathname } =
+        await import("../packages/vinext/src/shims/internal/navigation-untracked.js");
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const Context = navigation.getClientNavigationRenderContext();
+      if (!Context) {
+        throw new Error("Expected client navigation render context");
+      }
+
+      navigation.activateNavigationSnapshot();
+      const snapshot = navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/pending-untracked?from=snapshot",
+        {},
+      );
+
+      let pathname: string | null = "";
+      function Probe() {
+        pathname = useUntrackedPathname();
+        return React.createElement("span", null, pathname ?? "null");
+      }
+
+      renderToStaticMarkup(
+        React.createElement(Context.Provider, { value: snapshot }, React.createElement(Probe)),
+      );
+      expect(pathname).toBe("/pending-untracked");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("useUntrackedPathname ignores stale render snapshot after navigation commits", async () => {
+    const previousWindow = globalThis.window;
+    const win = {
+      addEventListener() {},
+      dispatchEvent() {
+        return true;
+      },
+      history: {
+        pushState() {},
+        replaceState() {},
+      },
+      location: {
+        href: "http://localhost/committed",
+        origin: "http://localhost",
+        pathname: "/committed",
+        search: "",
+      },
+      removeEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const { useUntrackedPathname } =
+        await import("../packages/vinext/src/shims/internal/navigation-untracked.js");
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const Context = navigation.getClientNavigationRenderContext();
+      if (!Context) {
+        throw new Error("Expected client navigation render context");
+      }
+
+      // Snapshot is present but NOT active (navigationSnapshotActiveCount === 0).
+      // This simulates a post-commit re-render where the provider still wraps
+      // the tree but the URL has since changed via user pushState/replaceState.
+      const snapshot = navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/stale-provider?from=snapshot",
+        {},
+      );
+
+      let pathname: string | null = "";
+      function Probe() {
+        pathname = useUntrackedPathname();
+        return React.createElement("span", null, pathname ?? "null");
+      }
+
+      renderToStaticMarkup(
+        React.createElement(Context.Provider, { value: snapshot }, React.createElement(Probe)),
+      );
+      // Must return the committed pathname, not the stale provider snapshot.
+      expect(pathname).toBe("/committed");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("useUntrackedPathname returns Pages Router pathname when no App context is set", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const accessorKey = Symbol.for("vinext.navigation.pagesNavigationContextAccessor");
+    const globalRecord = globalThis as Record<PropertyKey, unknown>;
+    const previousAccessor = globalRecord[accessorKey];
+
+    try {
+      globalRecord[accessorKey] = () => ({
+        pathname: "/pages/untracked",
+        searchParams: new URLSearchParams(""),
+        params: {},
+      });
+
+      const hookPath =
+        "../packages/vinext/src/shims/internal/navigation-untracked.js?pages-untracked=1";
+      const { useUntrackedPathname } = (await import(
+        hookPath
+      )) as typeof import("../packages/vinext/src/shims/internal/navigation-untracked.js");
+
+      let captured: string | null = "";
+      function Probe() {
+        captured = useUntrackedPathname();
+        return React.createElement("span", null, captured ?? "null");
+      }
+
+      renderToStaticMarkup(React.createElement(Probe));
+      expect(captured).toBe("/pages/untracked");
+    } finally {
+      if (previousAccessor === undefined) {
+        delete globalRecord[accessorKey];
+      } else {
+        globalRecord[accessorKey] = previousAccessor;
+      }
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // react-server re-exports
   // -------------------------------------------------------------------------
   it("navigation.react-server re-exports unstable_rethrow and stubs unstable_isUnrecognizedActionError", async () => {
@@ -1897,6 +2104,81 @@ describe("next/error shim — unstable_catchError", () => {
     expect(() => instance.unstable_retry()).toThrow(
       "`unstable_retry()` can only be used in the App Router. Use `reset()` in the Pages Router.",
     );
+  });
+
+  // Integration test: the boundary contract that useUntrackedPathname protects.
+  // The error boundary must clear its captured error when the pathname changes
+  // (navigation) and retain it when the pathname stays the same. This is the
+  // reason useUntrackedPathname exists: it provides a pathname that changes on
+  // navigation without subscribing the component to every URL change.
+  it("getDerivedStateFromProps clears the error when pathname changes and retains it when pathname stays the same", async () => {
+    const React = (await import("react")).default;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+
+    function Fallback() {
+      return null;
+    }
+    const Boundary = unstable_catchError(Fallback);
+
+    // The Boundary wrapper is a function component that calls hooks.
+    // We must call it inside a React render so React's dispatcher is active.
+    let wrapperResult: React.ReactElement | null = null;
+    function Capture() {
+      wrapperResult = (Boundary as unknown as (p: Record<string, never>) => React.ReactElement)({});
+      return React.createElement("span");
+    }
+    renderToStaticMarkup(React.createElement(Capture));
+
+    // Structural type for the internal class component so we can call
+    // getDerivedStateFromProps without importing non-public exports.
+    const InnerCatchError = wrapperResult!.type as unknown as React.ComponentClass<{
+      fallback: typeof Fallback;
+      pathname: string | null;
+      props: Record<string, never>;
+    }> & {
+      getDerivedStateFromProps(
+        props: Pick<{ pathname: string | null }, "pathname">,
+        state: { error: { thrownValue: unknown } | null; previousPathname: string | null },
+      ): { error: { thrownValue: unknown } | null; previousPathname: string | null };
+    };
+
+    const thrown = new Error("boom");
+    const initialState = {
+      error: { thrownValue: thrown },
+      previousPathname: "/initial",
+    };
+
+    // Same pathname: error must be retained
+    const samePath = InnerCatchError.getDerivedStateFromProps(
+      { pathname: "/initial" },
+      initialState,
+    );
+    expect(samePath).toEqual({
+      error: { thrownValue: thrown },
+      previousPathname: "/initial",
+    });
+
+    // Different pathname: error must be cleared
+    const changedPath = InnerCatchError.getDerivedStateFromProps(
+      { pathname: "/new" },
+      initialState,
+    );
+    expect(changedPath).toEqual({
+      error: null,
+      previousPathname: "/new",
+    });
+
+    // Null pathname to real pathname: error must be cleared.
+    // This matches the missing-params shell → real render transition.
+    const nullToReal = InnerCatchError.getDerivedStateFromProps(
+      { pathname: "/real" },
+      { error: { thrownValue: thrown }, previousPathname: null },
+    );
+    expect(nullToReal).toEqual({
+      error: null,
+      previousPathname: "/real",
+    });
   });
 });
 
