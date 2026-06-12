@@ -2118,6 +2118,47 @@ describe("window.next debug global", () => {
     }
   });
 
+  // Shallow navigations skip the render-commit path, so the scroll reset is
+  // applied synchronously in performNavigation — before routeChangeComplete.
+  // This matches the non-shallow path, where the x/y reset runs inside the
+  // render-commit callback (also ahead of routeChangeComplete). Pins the
+  // ordering so listeners observe the final scroll position.
+  it("shallow push applies the scroll reset before routeChangeComplete", async () => {
+    const previousWindow = (globalThis as any).window;
+    const order: string[] = [];
+    const win: any = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        origin: "http://localhost",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo(x: number, y: number) {
+        order.push(`scrollTo:${x},${y}`);
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      win.next.router.events.on("routeChangeComplete", () => {
+        order.push("routeChangeComplete");
+      });
+      const result = await win.next.router.push("/foo", undefined, { shallow: true });
+      expect(result).toBe(true);
+      expect(order).toEqual(["scrollTo:0,0", "routeChangeComplete"]);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
   // Issue #1522 — shallow `Router.push(url, as, { shallow: true })` must
   // update history to `as` (the visible URL) without fetching the server,
   // even when `as` matches a server-side redirect rule (e.g. `/redirect-1`
@@ -2339,6 +2380,7 @@ describe("next/router withRouter HOC", () => {
     vi.resetModules();
     vi.doMock("react", () => {
       const react = {
+        Component: class {},
         createContext(defaultValue: unknown) {
           return { Provider: "Provider", Consumer: "Consumer", defaultValue };
         },
@@ -2352,6 +2394,9 @@ describe("next/router withRouter HOC", () => {
           return [typeof initialValue === "function" ? initialValue() : initialValue, vi.fn()];
         },
         useEffect(effect: () => void | (() => void)) {
+          effect();
+        },
+        useLayoutEffect(effect: () => void | (() => void)) {
           effect();
         },
         useMemo(factory: () => unknown) {
@@ -12914,17 +12959,25 @@ describe("Pages Router router helpers", () => {
 });
 
 describe("Pages Router concurrent navigation", () => {
-  it("does not install the Pages Router popstate runtime when next/router is imported", async () => {
+  it("installs the Pages Router popstate runtime before exposing window.next.router", async () => {
     const previousWindow = (globalThis as any).window;
     const { win } = createNavWindow();
-    win.addEventListener = vi.fn();
+    const calls: string[] = [];
+    win.addEventListener = vi.fn((type: string) => {
+      const next = Reflect.get(win, "next");
+      const router =
+        typeof next === "object" && next !== null ? Reflect.get(next, "router") : undefined;
+      calls.push(
+        `${type}:${router === undefined ? "before-window-next-router" : "after-window-next-router"}`,
+      );
+    });
     (globalThis as any).window = win;
 
     try {
       vi.resetModules();
       await import("../packages/vinext/src/shims/router.js");
 
-      expect(win.addEventListener).not.toHaveBeenCalledWith("popstate", expect.any(Function));
+      expect(calls).toEqual(["popstate:before-window-next-router"]);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -13924,6 +13977,416 @@ describe("Pages Router concurrent navigation", () => {
       }
       globalThis.fetch = originalFetch;
       (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+
+  // Without experimental.scrollRestoration, popstate must still restore the
+  // per-entry scroll saved into history state on push (__vinext_scrollX/Y):
+  // a soft popstate re-renders content the browser's native "auto" scroll
+  // restoration can't position correctly.
+  it("popstate restores history-state scroll when manual scroll restoration is off", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win, render } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    globalThis.fetch = vi.fn(
+      async () => new Response(buildNavHtml("/other", pageModuleUrl), { status: 200 }),
+    );
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      const routeChangeComplete = new Promise<void>((resolve, reject) => {
+        (win as any).next.router.events.on("routeChangeComplete", () => resolve());
+        (win as any).next.router.events.on("routeChangeError", (err: unknown) => reject(err));
+      });
+
+      win.location.pathname = "/other";
+      win.location.href = "http://localhost/other";
+      // The router-owned state shape saveScrollPosition() writes on push:
+      // the Next.js state stamp plus the merged __vinext_scrollX/Y fields.
+      popstateHandler!({
+        state: {
+          __N: true,
+          url: "/other",
+          as: "/other",
+          options: {},
+          __vinext_scrollX: 12,
+          __vinext_scrollY: 345,
+        },
+      });
+      await routeChangeComplete;
+
+      // The scroll target is applied inside the render-commit callback; the
+      // mocked root.render never mounts React, so fire the commit manually.
+      expect(render).toHaveBeenCalled();
+      const committed = render.mock.calls.at(-1)![0];
+      committed.props.onCommit();
+
+      expect(win.scrollTo).toHaveBeenCalledWith(12, 345);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+
+  // When beforePopState cancels a popstate the app stays on the previous
+  // history entry, so the internal current-key tracker must keep pointing at
+  // that entry — otherwise later scroll bookkeeping saves the outgoing
+  // position under the wrong (never-visited) key. Observable via the next
+  // popstate's sessionStorage scroll save, which is keyed off the tracker.
+  it("beforePopState cancellation leaves the current history key unchanged", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalScrollRestorationEnv = process.env.__NEXT_SCROLL_RESTORATION;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createNavWindow();
+
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    // Enable the manual scroll restoration path: the flag also requires
+    // history.scrollRestoration support and a working sessionStorage.
+    (win.history as any).scrollRestoration = "auto";
+    const sessionStore = new Map<string, string>();
+    (win as any).sessionStorage = {
+      getItem: (key: string) => sessionStore.get(key) ?? null,
+      setItem: (key: string, value: string) => void sessionStore.set(key, value),
+      removeItem: (key: string) => void sessionStore.delete(key),
+    };
+    // Pre-stamped router-owned entry so install picks up its key.
+    (win.history as any).state = {
+      __N: true,
+      url: "/",
+      as: "/",
+      options: {},
+      key: "key-initial",
+    };
+
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn();
+    process.env.__NEXT_SCROLL_RESTORATION = "true";
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      const beforePopState = vi.fn(() => false);
+      (win as any).next.router.beforePopState(beforePopState);
+
+      // Back/forward to another entry, cancelled by beforePopState.
+      win.location.pathname = "/other";
+      win.location.href = "http://localhost/other";
+      popstateHandler!({
+        state: { __N: true, url: "/other", as: "/other", options: {}, key: "key-target" },
+      });
+      expect(beforePopState).toHaveBeenCalledTimes(1);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+
+      // A later popstate snapshots the outgoing scroll position under the
+      // tracked current key. The app never left the initial entry, so the
+      // snapshot must land on key-initial — not the cancelled key-target.
+      win.scrollX = 120;
+      win.scrollY = 450;
+      win.location.pathname = "/third";
+      win.location.href = "http://localhost/third";
+      popstateHandler!({
+        state: { __N: true, url: "/third", as: "/third", options: {}, key: "key-other" },
+      });
+
+      expect(sessionStore.get("__next_scroll_key-initial")).toBe(
+        JSON.stringify({ x: 120, y: 450 }),
+      );
+      expect(sessionStore.has("__next_scroll_key-target")).toBe(false);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      if (originalScrollRestorationEnv === undefined) {
+        delete process.env.__NEXT_SCROLL_RESTORATION;
+      } else {
+        process.env.__NEXT_SCROLL_RESTORATION = originalScrollRestorationEnv;
+      }
+    }
+  });
+
+  // A hash-only back/forward under manual scroll restoration honors only the
+  // hash anchor: the target entry's `__next_scroll_<key>` snapshot is read but
+  // intentionally not applied, matching Next.js where change()'s
+  // onlyAHashChange branch passes `null` to this.set() and only scrollToHash
+  // runs (forcedScroll feeds the full-navigation path exclusively). The
+  // departed entry's position is still snapshotted, and the unconsumed target
+  // snapshot stays in sessionStorage for a later non-hash popstate.
+  it("hash-only popstate scrolls to the hash anchor and leaves the entry snapshot for later", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalScrollRestorationEnv = process.env.__NEXT_SCROLL_RESTORATION;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win, pushState } = createNavWindow();
+
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    // Enable the manual scroll restoration path: the flag also requires
+    // history.scrollRestoration support and a working sessionStorage.
+    (win.history as any).scrollRestoration = "auto";
+    const sessionStore = new Map<string, string>();
+    (win as any).sessionStorage = {
+      getItem: (key: string) => sessionStore.get(key) ?? null,
+      setItem: (key: string, value: string) => void sessionStore.set(key, value),
+      removeItem: (key: string) => void sessionStore.delete(key),
+    };
+    // Pre-stamped router-owned entry so install picks up its key.
+    (win.history as any).state = {
+      __N: true,
+      url: "/",
+      as: "/",
+      options: {},
+      key: "key-initial",
+    };
+
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn();
+    process.env.__NEXT_SCROLL_RESTORATION = "true";
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      // Positive control: a Pages Router document with the flag enabled
+      // switches the browser to manual restoration at install time.
+      expect((win.history as any).scrollRestoration).toBe("manual");
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      // The position the user reached on the initial entry; the hash-only
+      // push below snapshots it under key-initial on departure.
+      win.scrollX = 5;
+      win.scrollY = 500;
+
+      // Hash-only push mints a new history entry ("#top" avoids the
+      // document-dependent getElementById branch of scrollToHashTarget).
+      await (win as any).next.router.push("/#top");
+      expect(sessionStore.get("__next_scroll_key-initial")).toBe(JSON.stringify({ x: 5, y: 500 }));
+      const pushedKey = pushState.mock.calls.at(-1)![0].key as string;
+      expect(typeof pushedKey).toBe("string");
+
+      const hashEvents: string[] = [];
+      (win as any).next.router.events.on("hashChangeStart", () =>
+        hashEvents.push("hashChangeStart"),
+      );
+      (win as any).next.router.events.on("hashChangeComplete", () =>
+        hashEvents.push("hashChangeComplete"),
+      );
+
+      // The live position on the hash entry, snapshotted on departure.
+      win.scrollX = 7;
+      win.scrollY = 70;
+      win.scrollTo.mockClear();
+
+      // Back to the initial entry: same pathname+search, only the hash
+      // differs, so this is a hash-only popstate.
+      win.location.hash = "";
+      win.location.pathname = "/";
+      win.location.href = "http://localhost/";
+      popstateHandler!({
+        state: { __N: true, url: "/", as: "/", options: {}, key: "key-initial" },
+      });
+
+      // Hash-only: no page fetch, hash events fired in order.
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(hashEvents).toEqual(["hashChangeStart", "hashChangeComplete"]);
+
+      // Only the hash anchor is honored (empty hash scrolls to top); the
+      // target entry's saved {x: 5, y: 500} is not applied (upstream parity).
+      expect(win.scrollTo).toHaveBeenCalledWith(0, 0);
+      expect(win.scrollTo).not.toHaveBeenCalledWith(5, 500);
+
+      // The departed hash entry's live position was snapshotted under its
+      // key, and the unconsumed target snapshot survives for a later
+      // non-hash popstate to this entry.
+      expect(sessionStore.get(`__next_scroll_${pushedKey}`)).toBe(JSON.stringify({ x: 7, y: 70 }));
+      expect(sessionStore.get("__next_scroll_key-initial")).toBe(JSON.stringify({ x: 5, y: 500 }));
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      if (originalScrollRestorationEnv === undefined) {
+        delete process.env.__NEXT_SCROLL_RESTORATION;
+      } else {
+        process.env.__NEXT_SCROLL_RESTORATION = originalScrollRestorationEnv;
+      }
+    }
+  });
+
+  // A hash-only push must snapshot the outgoing entry's scroll under its key
+  // before updateHistory mints the new entry's key — otherwise a later
+  // back-popstate to the departed entry restores {x: 0, y: 0} instead of the
+  // position the user had reached there. Upstream snapshots in Router.push()
+  // itself, ahead of change()'s onlyAHashChange short-circuit, so hash-only
+  // pushes still write `__next_scroll_<key>` for the departed entry.
+  it("hash-only push snapshots the outgoing entry's scroll under the old key", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalScrollRestorationEnv = process.env.__NEXT_SCROLL_RESTORATION;
+    const { win, pushState } = createNavWindow();
+
+    // Enable the manual scroll restoration path: the flag also requires
+    // history.scrollRestoration support and a working sessionStorage.
+    (win.history as any).scrollRestoration = "auto";
+    const sessionStore = new Map<string, string>();
+    (win as any).sessionStorage = {
+      getItem: (key: string) => sessionStore.get(key) ?? null,
+      setItem: (key: string, value: string) => void sessionStore.set(key, value),
+      removeItem: (key: string) => void sessionStore.delete(key),
+    };
+    // Pre-stamped router-owned entry so install picks up its key.
+    (win.history as any).state = {
+      __N: true,
+      url: "/",
+      as: "/",
+      options: {},
+      key: "key-initial",
+    };
+
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn();
+    process.env.__NEXT_SCROLL_RESTORATION = "true";
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      // The live position on the outgoing entry at push time ("#top" avoids
+      // the document-dependent getElementById branch of scrollToHashTarget).
+      win.scrollX = 30;
+      win.scrollY = 300;
+      await (win as any).next.router.push("/#top");
+
+      // Hash-only: no page fetch; a new entry was minted with a fresh key.
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      const pushedKey = pushState.mock.calls.at(-1)![0].key as string;
+      expect(typeof pushedKey).toBe("string");
+      expect(pushedKey).not.toBe("key-initial");
+
+      // The departed entry's position was snapshotted under its own key —
+      // not the freshly minted one — so a later back-popstate restores it.
+      expect(sessionStore.get("__next_scroll_key-initial")).toBe(JSON.stringify({ x: 30, y: 300 }));
+      expect(sessionStore.has(`__next_scroll_${pushedKey}`)).toBe(false);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      if (originalScrollRestorationEnv === undefined) {
+        delete process.env.__NEXT_SCROLL_RESTORATION;
+      } else {
+        process.env.__NEXT_SCROLL_RESTORATION = originalScrollRestorationEnv;
+      }
+    }
+  });
+
+  // The experimental.scrollRestoration manual opt-in is Pages-Router-only:
+  // an App Router document (window.next.appDir === true, stamped by the App
+  // Router bootstrap before any client-component module evaluates) that
+  // value-imports next/router for compat must not have the browser's native
+  // restoration disabled. Upstream only flips history.scrollRestoration in
+  // the Pages Router constructor, which never runs on App Router documents.
+  //
+  // This test guards the bootstrap eval-order invariant: the
+  // manualScrollRestoration constant in router.ts reads window.next?.appDir
+  // at module-eval time, which is only correct because installWindowNext in
+  // app-browser-entry.ts stamps appDir: true before the first next/router
+  // value-import evaluates. The failure mode is silent — if that ordering
+  // regressed, manual scroll restoration would flip on under App Router
+  // documents with no error, only subtly broken back/forward scroll.
+  it("does not flip history.scrollRestoration to manual on App Router documents", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalScrollRestorationEnv = process.env.__NEXT_SCROLL_RESTORATION;
+    const { win } = createNavWindow();
+
+    (win.history as any).scrollRestoration = "auto";
+    const sessionStore = new Map<string, string>();
+    (win as any).sessionStorage = {
+      getItem: (key: string) => sessionStore.get(key) ?? null,
+      setItem: (key: string, value: string) => void sessionStore.set(key, value),
+      removeItem: (key: string) => void sessionStore.delete(key),
+    };
+    // The App Router bootstrap stamp, in place before next/router evaluates.
+    (win as any).next = { version: "test", appDir: true };
+
+    (globalThis as any).window = win;
+    process.env.__NEXT_SCROLL_RESTORATION = "true";
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      expect((win.history as any).scrollRestoration).toBe("auto");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (originalScrollRestorationEnv === undefined) {
+        delete process.env.__NEXT_SCROLL_RESTORATION;
+      } else {
+        process.env.__NEXT_SCROLL_RESTORATION = originalScrollRestorationEnv;
+      }
     }
   });
 
