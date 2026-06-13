@@ -1131,6 +1131,31 @@ describe("next/navigation shim", () => {
     expect(typeof nav.useSelectedLayoutSegments).toBe("function");
   });
 
+  it("marks navigation hooks dynamic during fallback-shell prerendering", async () => {
+    const { createPprFallbackShellState, runWithPprFallbackShellState } =
+      await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+
+    const readHooks: Array<() => unknown> = [
+      () => navigation.usePathname(),
+      () => navigation.useSearchParams(),
+      () => navigation.useParams(),
+      () => navigation.useSelectedLayoutSegment(),
+      () => navigation.useSelectedLayoutSegments(),
+    ];
+
+    for (const readHook of readHooks) {
+      const state = createPprFallbackShellState({
+        fallbackParamNames: ["slug"],
+        routePattern: "/blog/:slug",
+      });
+
+      runWithPprFallbackShellState(state, readHook);
+
+      expect(state.hasDynamicBoundary).toBe(true);
+    }
+  });
+
   it("useSelectedLayoutSegment still works when provider and hook are loaded from different module instances", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
