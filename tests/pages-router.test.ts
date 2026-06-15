@@ -569,7 +569,9 @@ describe("Pages Router integration", () => {
     );
 
     const html = await res.text();
-    expect(html).toContain('<script nonce="pages-response">window.__NEXT_DATA__ = ');
+    expect(html).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-response">',
+    );
   });
 
   it("does not serve cached Pages ISR HTML to CSP nonce requests", async () => {
@@ -594,7 +596,9 @@ describe("Pages Router integration", () => {
     expect(second.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(second.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await second.text();
-    expect(secondHtml).toContain('<script nonce="pages-isr">window.__NEXT_DATA__ = ');
+    expect(secondHtml).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-isr">',
+    );
   });
 
   it("renders the SSR page with getServerSideProps data", async () => {
@@ -1545,7 +1549,7 @@ describe("Pages Router integration", () => {
       expectElementText(dynamicHtml, "resolved-url", "/blog/post-1");
       expectElementText(dynamicHtml, "as-path", "/blog/post-1");
       const dynamicNextDataMatch = dynamicHtml.match(
-        /<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/,
+        /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
       );
       expect(dynamicNextDataMatch).toBeTruthy();
       const dynamicNextData = JSON.parse(dynamicNextDataMatch![1]!);
@@ -1652,7 +1656,9 @@ describe("Pages Router integration", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("SSR Query");
-    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]!);
     expect(nextData.props.pageProps.query).toMatchObject({ hello: "world" });
@@ -1663,7 +1669,9 @@ describe("Pages Router integration", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toMatch(/Post:\s*(<!--\s*-->)?\s*first/);
-    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]!);
     expect(nextData.props.pageProps.query).toMatchObject({ id: "first", hello: "world" });
@@ -1675,7 +1683,9 @@ describe("Pages Router integration", () => {
     const res = await fetch(`${baseUrl}/mw-rewrite-merge-query?hello=world&other=keep`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]!);
     expect(nextData.props.pageProps.query).toMatchObject({
@@ -1689,7 +1699,9 @@ describe("Pages Router integration", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("SSR Query");
-    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]!);
     expect(nextData.props.pageProps.query).toEqual({});
@@ -1705,7 +1717,9 @@ describe("Pages Router integration", () => {
     const res = await fetch(`${baseUrl}/mw-clear-query-params?a=1&b=2&foo=bar&allowed=kept`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]!);
     expect(nextData.props.pageProps.query).toEqual({ allowed: "kept" });
@@ -1860,7 +1874,9 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Loading product...");
     // The full-content branch must NOT render — getStaticProps was skipped.
     expect(html).not.toMatch(/Product ID:.*unknown/);
-    const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(match).toBeTruthy();
     const nextData = JSON.parse(match![1]);
     expect(nextData.isFallback).toBe(true);
@@ -1920,7 +1936,9 @@ describe("Pages Router integration", () => {
       // Bot should see the real rendered page, not the loading shell.
       expect(html, `UA: ${userAgent}`).not.toContain("Loading product...");
       expect(html, `UA: ${userAgent}`).toMatch(new RegExp(`Product ID:.*${slug}`));
-      const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+      const match = html.match(
+        /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+      );
       expect(match, `UA: ${userAgent}`).toBeTruthy();
       const nextData = JSON.parse(match![1]);
       expect(nextData.isFallback, `UA: ${userAgent}`).toBe(false);
@@ -1940,7 +1958,9 @@ describe("Pages Router integration", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("Loading product...");
-    const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(match).toBeTruthy();
     const nextData = JSON.parse(match![1]);
     expect(nextData.isFallback).toBe(true);
@@ -1949,7 +1969,9 @@ describe("Pages Router integration", () => {
   it("includes isFallback: false in __NEXT_DATA__", async () => {
     const res = await fetch(`${baseUrl}/products/widget`);
     const html = await res.text();
-    const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(match).toBeTruthy();
     const nextData = JSON.parse(match![1]);
     expect(nextData.isFallback).toBe(false);
@@ -4797,7 +4819,9 @@ describe("Production server middleware (Pages Router)", () => {
     );
 
     const html = await res.text();
-    expect(html).toContain('<script nonce="pages-prod">window.__NEXT_DATA__ = ');
+    expect(html).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-prod">',
+    );
     expect(html).toMatch(/<script type="module" defer nonce="pages-prod" src="\/[^"]+"/);
     expect(html).toMatch(/<link rel="modulepreload" nonce="pages-prod" href="\/[^"]+"/);
   });
@@ -4843,7 +4867,9 @@ describe("Production server middleware (Pages Router)", () => {
     expect(second.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(second.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await second.text();
-    expect(secondHtml).toContain('<script nonce="pages-prod-isr">window.__NEXT_DATA__ = ');
+    expect(secondHtml).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-prod-isr">',
+    );
   });
 
   it("rewrites /rewritten to render /ssr content", async () => {
@@ -4865,7 +4891,9 @@ describe("Production server middleware (Pages Router)", () => {
     expect(html).toContain("Loading product...");
     // Full-data branch must not have rendered — getStaticProps was skipped.
     expect(html).not.toMatch(/Product ID:.*never-built/);
-    const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(match).toBeTruthy();
     const nextData = JSON.parse(match![1]);
     expect(nextData.isFallback).toBe(true);
@@ -5017,7 +5045,9 @@ describe("Production server middleware (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/mw-rewrite-query?hello=world`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]!);
     expect(nextData.props.pageProps.query).toMatchObject({ hello: "world" });
@@ -5027,7 +5057,9 @@ describe("Production server middleware (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/mw-rewrite-dynamic-query?hello=world`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]!);
     expect(nextData.props.pageProps.query).toMatchObject({ id: "first", hello: "world" });
@@ -5045,7 +5077,9 @@ describe("Production server middleware (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/mw-clear-query-params?a=1&b=2&foo=bar&allowed=kept`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]!);
     expect(nextData.props.pageProps.query).toEqual({ allowed: "kept" });
@@ -6748,6 +6782,14 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
   let routerServer: ViteDevServer;
   let routerBaseUrl: string;
 
+  function readNextData(html: string) {
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json"(?: nonce="[^"]+")?>([\s\S]*?)<\/script>/,
+    );
+    expect(match).toBeTruthy();
+    return JSON.parse(match![1]);
+  }
+
   beforeAll(async () => {
     ({ server: routerServer, baseUrl: routerBaseUrl } = await startFixtureServer(FIXTURE_DIR));
   });
@@ -6760,9 +6802,7 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     const res = await fetch(`${routerBaseUrl}/blog/hello-world`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    expect(match).toBeTruthy();
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.query).toEqual({ slug: "hello-world" });
     expect(nextData.page).toBe("/blog/[slug]");
   });
@@ -6771,8 +6811,7 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     const res = await fetch(`${routerBaseUrl}/posts/hello-world`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.page).toBe("/posts/[id]");
     expect(nextData.query.id).toBe("hello-world");
   });
@@ -6781,33 +6820,38 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     const res = await fetch(`${routerBaseUrl}/docs/a/b/c`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.page).toBe("/docs/[...slug]");
   });
 
   it("__NEXT_DATA__ includes isFallback: false", async () => {
     const res = await fetch(`${routerBaseUrl}/blog/hello-world`);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.isFallback).toBe(false);
   });
 
   it("static page __NEXT_DATA__.page is the pathname", async () => {
     const res = await fetch(`${routerBaseUrl}/about`);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.page).toBe("/about");
+  });
+
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/prerender.test.ts
+  it("omits gsp from __NEXT_DATA__ for non-GSP pages", async () => {
+    const res = await fetch(`${routerBaseUrl}/about`);
+    const html = await res.text();
+    const nextData = readNextData(html);
+    expect("gsp" in nextData).toBe(false);
   });
 
   it("shallow-test page returns correct __NEXT_DATA__ with GSSP props", async () => {
     const res = await fetch(`${routerBaseUrl}/shallow-test`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.page).toBe("/shallow-test");
     expect(nextData.props.pageProps.gsspCallId).toBeGreaterThan(0);
   });
@@ -6868,9 +6912,7 @@ export default function middleware() {
         const res = await fetch(`${baseUrl}/docs/first`);
         expect(res.status).toBe(200);
         const html = await res.text();
-        const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-        expect(match).toBeTruthy();
-        const nextData = JSON.parse(match![1]);
+        const nextData = readNextData(html);
         expect(nextData.page).toBe("/[...path]");
         expect(nextData.query).toEqual({ path: ["first"] });
         expect(html).toContain("CatchAll");
