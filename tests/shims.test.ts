@@ -3370,6 +3370,34 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
+  it("headers() strips internal flight and dev request-id headers from userland reads", async () => {
+    // Ported from Next.js:
+    // packages/next/src/server/async-storage/request-store.ts
+    // https://github.com/vercel/next.js/blob/bba8fe18eb21d49dac68cdddef64e8906dc9f804/packages/next/src/server/async-storage/request-store.ts
+    const { setHeadersContext, headers } = await import("../packages/vinext/src/shims/headers.js");
+    const reqHeaders = new Headers({
+      rsc: "1",
+      "Next-Router-State-Tree": "tree",
+      "x-nextjs-request-id": "dev-request",
+      "x-nextjs-html-request-id": "dev-html-request",
+      "x-custom": "test-value",
+    });
+    setHeadersContext({
+      headers: reqHeaders,
+      cookies: new Map(),
+    });
+
+    const h = await headers();
+    expect(h.get("x-custom")).toBe("test-value");
+    expect(h.get("rsc")).toBeNull();
+    expect(h.get("Next-Router-State-Tree")).toBeNull();
+    expect(h.get("x-nextjs-request-id")).toBeNull();
+    expect(h.get("x-nextjs-html-request-id")).toBeNull();
+    expect(reqHeaders.get("x-nextjs-request-id")).toBe("dev-request");
+    expect(reqHeaders.get("x-nextjs-html-request-id")).toBe("dev-html-request");
+    setHeadersContext(null);
+  });
+
   it("headers() supports the legacy sync access pattern", async () => {
     // Next.js docs: headers() temporarily supports sync property access in v15.
     const { setHeadersContext, headers } = await import("../packages/vinext/src/shims/headers.js");
