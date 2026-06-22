@@ -8,7 +8,12 @@
  * We support both the sync (legacy) and async patterns.
  */
 
-import { MIDDLEWARE_SET_COOKIE_HEADER } from "../server/headers.js";
+import {
+  FLIGHT_HEADERS,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+  NEXT_HTML_REQUEST_ID_HEADER,
+  NEXT_REQUEST_ID_HEADER,
+} from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
@@ -737,7 +742,13 @@ function _getReadonlyCookies(ctx: HeadersContext): RequestCookies {
 
 function _getReadonlyHeaders(ctx: HeadersContext): Headers {
   if (!ctx.readonlyHeaders) {
-    ctx.readonlyHeaders = _sealHeaders(ctx.headers);
+    const cleaned = new Headers(ctx.headers);
+    for (const header of FLIGHT_HEADERS) {
+      cleaned.delete(header);
+    }
+    cleaned.delete(NEXT_REQUEST_ID_HEADER);
+    cleaned.delete(NEXT_HTML_REQUEST_ID_HEADER);
+    ctx.readonlyHeaders = _sealHeaders(cleaned);
   }
 
   return ctx.readonlyHeaders;
