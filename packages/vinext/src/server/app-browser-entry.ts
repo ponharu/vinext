@@ -2164,8 +2164,7 @@ function bootstrapHydration(
       // empty; if it throws again, devOnCaughtError/devOnUncaughtError
       // re-populates it. Without this, an old "DropZone is not defined"
       // error would linger after the developer fixed the bug.
-      const devErrorOverlay = await import("./dev-error-overlay.js");
-      devErrorOverlay.dismissOverlay();
+      devErrorOverlay?.dismissOverlay();
       // Interception context on HMR re-renders is intentionally deferred:
       // preserving intercepted modal state across HMR reloads is out of scope
       // for the previousNextUrl mechanism.
