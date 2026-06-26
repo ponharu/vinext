@@ -13358,6 +13358,35 @@ describe("next/amp shim", () => {
 });
 
 describe("app router scroll intent state", () => {
+  it("captures the head elements that existed before navigation", async () => {
+    const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
+      await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+
+    const originalDocumentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const existingStylesheet = {} as Element;
+    const existingMetadata = {} as Element;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { head: { children: [existingStylesheet, existingMetadata] } },
+    });
+
+    try {
+      clearAppRouterScrollIntent();
+      const intent = beginAppRouterScrollIntent(null);
+
+      expect(intent.headElements).not.toBeNull();
+      expect(intent.headElements?.has(existingStylesheet)).toBe(true);
+      expect(intent.headElements?.has(existingMetadata)).toBe(true);
+    } finally {
+      clearAppRouterScrollIntent();
+      if (originalDocumentDescriptor) {
+        Object.defineProperty(globalThis, "document", originalDocumentDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, "document");
+      }
+    }
+  });
+
   it("clears a staged scroll intent when a same-document navigation supersedes it", async () => {
     const {
       beginAppRouterScrollIntent,
@@ -13603,6 +13632,7 @@ describe("app router scroll document-top fallback", () => {
     const intent = {
       commitId: 1,
       hash: null,
+      headElements: null,
       id: 1,
       targetHoistedInHead: true,
     };
