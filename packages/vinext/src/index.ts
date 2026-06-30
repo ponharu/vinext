@@ -1,5 +1,6 @@
 import type {
   CSSModulesOptions,
+  Logger,
   Plugin,
   PluginOption,
   ResolvedConfig,
@@ -234,6 +235,25 @@ import {
   VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY,
   type VinextPrerenderConfig,
 } from "./config/prerender.js";
+
+const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
+  "vinext/server/fetch-handler",
+  "vinext/server/pages-router-entry",
+]);
+
+const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
+  "react",
+  "react-dom",
+  "react-dom/server.edge",
+  "react/jsx-runtime",
+  "react/jsx-dev-runtime",
+  "use-sync-external-store/with-selector",
+]);
+
+const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
+  /Failed to resolve dependency: .*use-sync-external-store\/with-selector.*present in .* 'optimizeDeps\.include'/;
+const VINEXT_FILTERED_OPTIMIZE_DEPS_WARN = Symbol.for("vinext.filteredOptimizeDepsWarn");
+const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -700,6 +720,30 @@ type UserResolveConfigWithTsconfigPaths = NonNullable<UserConfig["resolve"]> & {
   tsconfigPaths?: boolean;
 };
 
+function mergeStringArrayValues(
+  value: string | readonly string[] | undefined,
+  additions: readonly string[],
+): string[] {
+  const existing = value === undefined ? [] : Array.isArray(value) ? value : [value];
+  return [...new Set([...existing, ...additions])];
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(ANSI_ESCAPE_RE, "");
+}
+
+function suppressOptionalOptimizeDepsWarnings(logger: Logger): void {
+  const marker = logger as Logger & { [VINEXT_FILTERED_OPTIMIZE_DEPS_WARN]?: true };
+  if (marker[VINEXT_FILTERED_OPTIMIZE_DEPS_WARN]) return;
+
+  const warn = logger.warn.bind(logger);
+  logger.warn = (msg, options) => {
+    if (OPTIONAL_OPTIMIZE_DEPS_WARNING_RE.test(stripAnsi(msg))) return;
+    warn(msg, options);
+  };
+  marker[VINEXT_FILTERED_OPTIMIZE_DEPS_WARN] = true;
+}
+
 // Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
 // transforms can see them via resolve.alias without re-reading config files per env.
 const _tsconfigAliasCache = new Map<string, Record<string, string>>();
@@ -1083,6 +1127,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+  let isServeCommand = false;
+  let pagesOptimizeEntries: string[] = [];
   const pagesClientAssetsOutputDirs = new Set<string>();
   let pagesClientAssetsModule: string | null = null;
   let rscCompatibilityId: string | undefined;
@@ -1491,6 +1537,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       >),
 
       async config(config, env) {
+        isServeCommand = env.command === "serve";
         root = normalizePathSeparators(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths =
@@ -2530,7 +2577,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             plugins: [depOptimizeAliasPlugin],
           },
         };
-        const pagesOptimizeEntries = !hasAppDir
+        pagesOptimizeEntries = !hasAppDir
           ? [
               ...(hasPagesDir
                 ? [toRelativeFileEntry(root, pagesDir) + "/**/*.{tsx,ts,jsx,js}"]
@@ -2833,6 +2880,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configEnvironment(name, config) {
+        if (
+          isServeCommand &&
+          hasCloudflarePlugin &&
+          hasPagesDir &&
+          !hasAppDir &&
+          name !== "client"
+        ) {
+          // The Cloudflare plugin owns the Worker dev environment. Seed it
+          // with Pages Router server entries so Vite does not discover vinext's
+          // Worker entry and React's CJS edge renderer on the first request,
+          // trigger a full reload, and execute raw CJS in the Worker module
+          // runner.
+          config.optimizeDeps ??= {};
+          config.optimizeDeps.entries = mergeStringArrayValues(
+            config.optimizeDeps.entries,
+            pagesOptimizeEntries,
+          );
+          config.optimizeDeps.include = mergeStringArrayValues(
+            config.optimizeDeps.include,
+            PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE,
+          );
+          config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
+            config.optimizeDeps.exclude ?? [],
+            VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+            PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE,
+          );
+        }
+
         const configuredExtensions =
           name === "client" ? nextConfig.resolveExtensions : nextConfig.serverResolveExtensions;
         const extensions =
@@ -2847,6 +2922,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       async configResolved(config) {
         const cacheDirPrefix = getCacheDirPrefix(config.cacheDir);
         typeofWindowIdFilter.exclude = new RegExp(`^${escapeRegExp(cacheDirPrefix)}`);
+        if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
+          suppressOptionalOptimizeDepsWarnings(config.logger);
+        }
 
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
         // it can call Vite's `preprocessCSS` when processing SCSS files
