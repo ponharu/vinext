@@ -322,6 +322,44 @@ export default function middleware() {
   );
 }
 
+/**
+ * Fixture: a root-level optional catch-all page `pages/[[...markdownPath]].js`
+ * whose getStaticPaths emits an empty-params entry (`{ markdownPath: [] }`) for
+ * the homepage plus one concrete path. Models the react.dev shape where nearly
+ * everything is served from `src/pages/[[...markdownPath]].js` and the homepage
+ * is the empty-params root. Under Next.js this serves `/` with empty params.
+ */
+function writeOptionalCatchAllRootFixture(rootDir: string): void {
+  fs.mkdirSync(path.join(rootDir, "pages"), { recursive: true });
+  const nmLink = path.join(rootDir, "node_modules");
+  if (!fs.existsSync(nmLink)) {
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+  }
+  fs.writeFileSync(
+    path.join(rootDir, "next.config.js"),
+    `module.exports = { generateBuildId: () => "test-build-id" };\n`,
+  );
+  fs.writeFileSync(path.join(rootDir, "pages", "_app.js"), PAGES_APP_COMPONENT);
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "[[...markdownPath]].js"),
+    `export default function MarkdownPage({ markdownPath }) {
+  return <main><p id="content">Path: [{(markdownPath || []).join("/")}]</p></main>;
+}
+
+export async function getStaticPaths() {
+  return {
+    paths: [{ params: { markdownPath: [] } }, { params: { markdownPath: ["learn"] } }],
+    fallback: false,
+  };
+}
+
+export async function getStaticProps({ params }) {
+  return { props: { markdownPath: params.markdownPath ?? [] } };
+}
+`,
+  );
+}
+
 function writeGsspAppInitialPropsContextFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "blog", "[post]"), { recursive: true });
   fs.mkdirSync(path.join(rootDir, "pages", "rewrite-target"), { recursive: true });
@@ -1613,6 +1651,48 @@ describe("Pages Router integration", () => {
 
     const unlistedRes = await fetch(`${baseUrl}/mixed-catchall/unlisted`);
     expect(unlistedRes.status).toBe(404);
+  });
+
+  // Ported from Next.js: test/e2e/dynamic-optional-routing-root-static-paths
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-optional-routing-root-static-paths/dynamic-optional-routing-root-static-paths.test.ts
+  // A root-level optional catch-all
+  // `pages/[[...markdownPath]].js` whose getStaticPaths emits the empty-params
+  // entry `{ markdownPath: [] }` must serve the root `/` (HTML) and its
+  // `/_next/data/<id>/index.json` endpoint, not 404. This is the react.dev
+  // shape; the existing optional catch-all test only covers a non-root subpath.
+  it("serves the root / for an optional catch-all root with empty params (dev)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optional-catchall-root-"));
+    writeOptionalCatchAllRootFixture(tmpDir);
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      // Dev renders the root `/` HTML with empty params.
+      const rootRes = await fetch(`${started.baseUrl}/`);
+      expect(rootRes.status).toBe(200);
+      const rootHtml = await rootRes.text();
+      expect(rootHtml).toMatch(/Path: \[(?:<!-- -->)?\]/);
+
+      // The `_next/data/<id>/index.json` endpoint serves the root data.
+      const dataRes = await fetch(`${started.baseUrl}/_next/data/test-build-id/index.json`);
+      expect(dataRes.status).toBe(200);
+      const data = (await dataRes.json()) as { pageProps: { markdownPath: string[] } };
+      expect(data.pageProps.markdownPath).toEqual([]);
+
+      // A non-root concrete path still works (proves the root case is specific).
+      const learnRes = await fetch(`${started.baseUrl}/learn`);
+      expect(learnRes.status).toBe(200);
+      expect(await learnRes.text()).toMatch(/Path: \[(?:<!-- -->)?learn(?:<!-- -->)?\]/);
+
+      // An unlisted path with fallback:false is still a 404.
+      const unlistedRes = await fetch(`${started.baseUrl}/unlisted-path`);
+      expect(unlistedRes.status).toBe(404);
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("renders pre-listed paths with getStaticPaths fallback: blocking", async () => {
