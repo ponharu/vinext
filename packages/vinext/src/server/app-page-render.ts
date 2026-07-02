@@ -143,6 +143,7 @@ type RenderAppPageLifecycleOptions = {
   isForceStatic: boolean;
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
+  isSpeculativePrerender?: boolean;
   isProduction: boolean;
   probePageBeforeRender?: boolean;
   omitPendingDynamicCacheState?: boolean;
@@ -751,6 +752,9 @@ export async function renderAppPageLifecycle(
 
   let revalidateSeconds = options.revalidateSeconds;
   let expireSeconds = options.expireSeconds;
+  const shouldWaitForAllReady =
+    options.isPrerender === true && options.isSpeculativePrerender !== true;
+  const shouldReadRequestCacheLifeForPrerender = options.isPrerender === true;
   const shouldCaptureRscForCacheMetadata =
     options.isProgressiveActionRender !== true &&
     (options.isProduction || options.isPrerender === true) &&
@@ -789,8 +793,10 @@ export async function renderAppPageLifecycle(
 
   if (options.isRscRequest) {
     let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
-    if (options.isPrerender === true) {
+    if (shouldWaitForAllReady) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+    }
+    if (shouldReadRequestCacheLifeForPrerender) {
       requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
       ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
         expireSeconds,
@@ -970,7 +976,11 @@ export async function renderAppPageLifecycle(
         scriptNonce: options.scriptNonce,
         sideStream: rscCapture.sideStream,
         ssrHandler,
-        waitForAllReady: options.isPrerender === true,
+        fallbackToErrorDocumentOnShellError:
+          options.isPrerender === true && options.isSpeculativePrerender === true
+            ? false
+            : undefined,
+        waitForAllReady: shouldWaitForAllReady,
       });
     },
     renderSpecialErrorResponse(specialError) {
@@ -1022,8 +1032,26 @@ export async function renderAppPageLifecycle(
 
   // Eagerly read values that must be captured before the stream is consumed.
   let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
-  if (options.isPrerender === true) {
-    await settleCapturedRscRenderForCacheMetadata(htmlRender.capturedRscData);
+  let dynamicUsedDuringRender = options.consumeDynamicUsage();
+  dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
+  const stopSpeculativeMetadataWaitOnDynamicUsage =
+    options.isSpeculativePrerender === true && shouldReadRequestCacheLifeForPrerender
+      ? () => {
+          if (dynamicUsedDuringRender || (options.peekDynamicUsage?.() ?? peekDynamicUsage())) {
+            dynamicUsedDuringRender = true;
+            dynamicUsedDuringHtmlRender = true;
+            return true;
+          }
+          return false;
+        }
+      : undefined;
+  if (shouldWaitForAllReady || shouldReadRequestCacheLifeForPrerender) {
+    await settleCapturedRscRenderForCacheMetadata(
+      htmlRender.capturedRscData,
+      stopSpeculativeMetadataWaitOnDynamicUsage,
+    );
+  }
+  if (shouldReadRequestCacheLifeForPrerender) {
     requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
       expireSeconds,
@@ -1031,7 +1059,7 @@ export async function renderAppPageLifecycle(
       revalidateSeconds,
     }));
   }
-  let dynamicUsedDuringRender = options.consumeDynamicUsage();
+  dynamicUsedDuringRender = dynamicUsedDuringRender || options.consumeDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
 
   const draftCookie = options.getDraftModeCookieHeader();
@@ -1183,16 +1211,39 @@ export async function renderAppPageLifecycle(
 
 async function settleCapturedRscRenderForCacheMetadata(
   capturedRscDataPromise: Promise<ArrayBuffer> | null,
+  shouldStopWaiting?: () => boolean,
 ): Promise<void> {
   if (!capturedRscDataPromise) {
     return;
   }
 
+  if (!shouldStopWaiting) {
+    try {
+      await capturedRscDataPromise;
+    } catch {
+      // The response stream and cache-write path own render error propagation.
+      // This pre-read only makes "use cache" metadata available before headers
+      // and ISR seed metadata are finalized.
+    }
+    return;
+  }
+
+  let settled = false;
+  const settledPromise = capturedRscDataPromise
+    .catch(() => {
+      // The response stream and cache-write path own render error propagation.
+      // This pre-read only makes "use cache" metadata available before headers
+      // and ISR seed metadata are finalized.
+    })
+    .then(() => {
+      settled = true;
+    });
+
   try {
-    await capturedRscDataPromise;
-  } catch {
-    // The response stream and cache-write path own render error propagation.
-    // This pre-read only makes "use cache" metadata available before headers
-    // and ISR seed metadata are finalized.
+    while (!settled && !shouldStopWaiting()) {
+      await Promise.race([settledPromise, new Promise<void>((resolve) => setTimeout(resolve, 0))]);
+    }
+  } finally {
+    void settledPromise;
   }
 }
