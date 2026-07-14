@@ -18033,6 +18033,57 @@ describe("Pages Router concurrent navigation", () => {
   });
 });
 
+describe("notify-suppressed history writes", () => {
+  it("preserves native errors from URL-changing history writes", async () => {
+    const previousWindow = (globalThis as any).window;
+    const securityError = new DOMException(
+      "A history state object with URL 'https://example.com/' cannot be created in a " +
+        "document with origin 'https://example.com' and URL 'https://user:pass@example.com/'.",
+      "SecurityError",
+    );
+    const pushState = vi.fn(() => {
+      throw securityError;
+    });
+    const replaceState = vi.fn(() => {
+      throw securityError;
+    });
+    const win = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "https://example.com/",
+        hostname: "example.com",
+      },
+      history: { state: null, pushState: pushState as any, replaceState: replaceState as any },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+    try {
+      vi.resetModules();
+      const { pushHistoryStateWithoutNotify, replaceHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      expect(() => replaceHistoryStateWithoutNotify({ __vinext_historyIndex: 0 }, "", "/")).toThrow(
+        securityError,
+      );
+      expect(() =>
+        pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/next"),
+      ).toThrow(securityError);
+
+      expect(replaceState).toHaveBeenCalledTimes(1);
+      expect(pushState).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+});
+
 describe("deprecated Router.on<Event> property bridge", () => {
   // These tests verify that assigning a function to a deprecated property such
   // as `Router.onRouteChangeComplete` causes that function to be invoked when
