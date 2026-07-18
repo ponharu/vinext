@@ -8,6 +8,8 @@ import React from "react";
 import { makeThenableParams, type ThenableParamsObserver } from "./thenable-params.js";
 import { isAbsoluteOrProtocolRelativeUrl } from "./url-utils.js";
 
+const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
+
 // ---------------------------------------------------------------------------
 // Viewport types and resolution
 // ---------------------------------------------------------------------------
@@ -548,6 +550,7 @@ export async function resolveModuleMetadata(
   searchParamsObserver?: ThenableParamsObserver,
 ): Promise<Metadata | null> {
   if (typeof mod.generateMetadata === "function") {
+    const generateMetadata = mod.generateMetadata;
     // Next.js 16 passes params/searchParams as Promises (async pattern).
     // makeThenableParams() normalises null-prototype + preserves sync access.
     const asyncParams = makeThenableParams(params);
@@ -558,20 +561,14 @@ export async function resolveModuleMetadata(
             params: asyncParams,
             searchParams: makeThenableParams(searchParams, searchParamsObserver),
           };
-    // Only pass the `parent` metadata when `generateMetadata` actually declares
-    // it (arity >= 2). Next.js omits the parent argument for `generateMetadata`
-    // functions that don't use it, which matters for `'use cache'` functions:
-    // the cache-key encoder (encodeReply) would otherwise try to serialize the
-    // resolved parent metadata, which can contain a non-serializable `URL`
-    // `metadataBase` and throws "URL objects are not supported".
-    // See Next.js resolve-metadata.ts (getResult / useCacheFunctionInfo.usedArgs[1]).
-    //
-    // Note: `fn.length` approximates Next.js's static usage analysis. It can
-    // diverge on default-parameter signatures — e.g. `(props, parent = x)`
-    // reports length 1, and `(props = {}, parent)` reports length 0 — but a
-    // default value on `generateMetadata`'s `parent` is unusual in practice.
-    const usesParent = mod.generateMetadata.length >= 2;
-    return await (usesParent ? mod.generateMetadata(props, parent) : mod.generateMetadata(props));
+    // Next.js always passes `parent` to regular resolvers. Cached resolvers are
+    // different: an unused parent must stay out of the cache key because it can
+    // contain non-serializable values such as a URL metadataBase. vinext uses
+    // function arity as an approximation of Next.js's transform-time used-arg
+    // analysis, so restrict that approximation to `use cache` wrappers.
+    const isUseCacheFunction = Reflect.get(generateMetadata, USE_CACHE_FUNCTION_SYMBOL) === true;
+    const passesParent = !isUseCacheFunction || generateMetadata.length >= 2;
+    return await (passesParent ? generateMetadata(props, parent) : generateMetadata(props));
   }
   if (mod.metadata && typeof mod.metadata === "object") {
     return mod.metadata as Metadata;
