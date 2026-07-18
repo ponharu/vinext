@@ -429,9 +429,10 @@ describe("app page head resolution", () => {
     expect(result.viewport.themeColor).toEqual([{ color: "red" }]);
   });
 
-  it("accumulates named slot viewports before the primary page", async () => {
-    // Next.js walks named parallel routes before the primary children route and
-    // passes the accumulated viewport to each subsequent resolver.
+  it("accumulates the primary page viewport before named slots", async () => {
+    // Next.js seeds the loader tree with `children` before named parallel
+    // segments, then walks those branches in insertion order.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
     const parentViewports: Array<{ source: string; viewport: unknown }> = [];
     const firstSlotLayout = {
@@ -483,10 +484,21 @@ describe("app page head resolution", () => {
 
     expect(parentViewports).toEqual([
       {
+        source: "primary page",
+        viewport: {
+          colorScheme: null,
+          initialScale: 1,
+          themeColor: null,
+          viewportFit: "cover",
+          width: "device-width",
+        },
+      },
+      {
         source: "first layout",
         viewport: {
           colorScheme: null,
           initialScale: 1,
+          maximumScale: 9,
           themeColor: null,
           viewportFit: "cover",
           width: "device-width",
@@ -498,6 +510,7 @@ describe("app page head resolution", () => {
           colorScheme: null,
           height: 111,
           initialScale: 1,
+          maximumScale: 9,
           themeColor: null,
           viewportFit: "cover",
           width: "device-width",
@@ -516,24 +529,11 @@ describe("app page head resolution", () => {
           width: "device-width",
         },
       },
-      {
-        source: "primary page",
-        viewport: {
-          colorScheme: null,
-          height: 111,
-          initialScale: 4,
-          maximumScale: 7,
-          minimumScale: 0.5,
-          themeColor: null,
-          viewportFit: "cover",
-          width: "device-width",
-        },
-      },
     ]);
     expect(result.viewport).toMatchObject({
       height: 111,
       initialScale: 4,
-      maximumScale: 2,
+      maximumScale: 7,
       minimumScale: 0.5,
       viewportFit: "cover",
     });

@@ -725,6 +725,20 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
   );
   const parallelRouteViewportPromises: Promise<(Viewport | null)[]>[] = [];
   let accumulatedViewport = layoutViewport.resolvedViewport;
+  const pageParentViewport = accumulatedViewport;
+  const pageViewportPromise = options.pageModule
+    ? resolveModuleViewport(
+        options.pageModule,
+        options.params,
+        pageSearchParams,
+        pageParentViewport,
+        options.searchParamsObserver,
+      )
+    : Promise.resolve(null);
+  if (options.pageModule) {
+    accumulatedViewport = mergeResolvedViewport(pageParentViewport, pageViewportPromise);
+    void accumulatedViewport.catch(() => null);
+  }
   for (const parallelRoute of parallelRoutes) {
     const parallelViewport = resolveParallelRouteViewport(
       parallelRoute,
@@ -738,15 +752,6 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     accumulatedViewport = parallelViewport.resolvedViewport;
   }
   const parallelRouteViewportPromise = Promise.all(parallelRouteViewportPromises);
-  const pageViewportPromise = options.pageModule
-    ? resolveModuleViewport(
-        options.pageModule,
-        options.params,
-        pageSearchParams,
-        accumulatedViewport,
-        options.searchParamsObserver,
-      )
-    : Promise.resolve(null);
   const hasDynamicMetadata =
     primaryHasDynamicMetadata || parallelRoutes.some(parallelRouteHasDynamicMetadata);
 
@@ -796,8 +801,8 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
   ]).then(([layoutViewportResults, pageViewport, parallelRouteViewports]) =>
     mergeViewport([
       ...layoutViewportResults.filter(isPresent),
-      ...parallelRouteViewports.flat().filter(isPresent),
       ...(pageViewport ? [pageViewport] : []),
+      ...parallelRouteViewports.flat().filter(isPresent),
     ]),
   );
 
