@@ -33,7 +33,9 @@ describe("app page head resolution", () => {
     });
 
     expect(prepared.hasDynamicMetadata).toBe(true);
-    await expect(prepared.viewport).resolves.toMatchObject({ themeColor: "#123456" });
+    await expect(prepared.viewport).resolves.toMatchObject({
+      themeColor: [{ color: "#123456" }],
+    });
 
     let metadataSettled = false;
     void prepared.metadata.then(() => {
@@ -208,7 +210,9 @@ describe("app page head resolution", () => {
       },
     });
     expect(result.viewport).toEqual({
+      colorScheme: null,
       initialScale: 1,
+      themeColor: null,
       width: "device-width",
     });
     expect(result.pageSearchParams).toEqual({ tag: ["next", "vinext"] });
@@ -216,6 +220,88 @@ describe("app page head resolution", () => {
     expect(layoutSearchParamsSeen).toEqual([undefined]);
     expect(layoutParamsSeen).toEqual([{}]);
     expect(pageParentImages).toEqual(["/root-og.png", "/nested-og.png"]);
+  });
+
+  it("resolves viewport descriptors with parent chaining", async () => {
+    // Matches Next.js's sequential parent resolution in accumulateViewport:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+    const parentViewports: unknown[] = [];
+    const rootLayout = {
+      viewport: {
+        themeColor: "#111111",
+        viewportFit: "cover",
+        width: "device-width",
+      },
+    };
+    const nestedLayout = {
+      async generateViewport(
+        _props: unknown,
+        parent: Promise<unknown> = Promise.resolve({ height: "default-parent" }),
+      ) {
+        parentViewports.push(await parent);
+        return {
+          initialScale: 2,
+          themeColor: {
+            color: "#222222",
+            media: "(prefers-color-scheme: dark)",
+          },
+        };
+      },
+    };
+    const page = {
+      async generateViewport(...args: [unknown, Promise<unknown>]) {
+        parentViewports.push(await args[1]);
+        return {
+          interactiveWidget: "overlays-content",
+          viewportFit: undefined,
+        };
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [rootLayout, nestedLayout],
+      layoutTreePositions: [0, 1],
+      metadataRoutes: [],
+      pageModule: page,
+      params: {},
+      routePath: "/nested",
+      routeSegments: ["nested"],
+    });
+
+    expect(parentViewports).toEqual([
+      {
+        colorScheme: null,
+        initialScale: 1,
+        themeColor: [{ color: "#111111" }],
+        viewportFit: "cover",
+        width: "device-width",
+      },
+      {
+        colorScheme: null,
+        initialScale: 2,
+        themeColor: [
+          {
+            color: "#222222",
+            media: "(prefers-color-scheme: dark)",
+          },
+        ],
+        viewportFit: "cover",
+        width: "device-width",
+      },
+    ]);
+    expect(result.viewport).toEqual({
+      colorScheme: null,
+      initialScale: 2,
+      interactiveWidget: "overlays-content",
+      themeColor: [
+        {
+          color: "#222222",
+          media: "(prefers-color-scheme: dark)",
+        },
+      ],
+      viewportFit: undefined,
+      width: "device-width",
+    });
   });
 
   it("keeps layout tree positions aligned when layout module slots are empty", async () => {
@@ -340,7 +426,117 @@ describe("app page head resolution", () => {
 
     expect(viewportColors).toEqual(["red", "red"]);
     expect(observeParamAccess).toHaveBeenCalled();
-    expect(result.viewport.themeColor).toBe("red");
+    expect(result.viewport.themeColor).toEqual([{ color: "red" }]);
+  });
+
+  it("accumulates named slot viewports before the primary page", async () => {
+    // Next.js walks named parallel routes before the primary children route and
+    // passes the accumulated viewport to each subsequent resolver.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+    const parentViewports: Array<{ source: string; viewport: unknown }> = [];
+    const firstSlotLayout = {
+      async generateViewport(_props: unknown, parent: Promise<unknown>) {
+        parentViewports.push({ source: "first layout", viewport: await parent });
+        return { height: 111 };
+      },
+    };
+    const firstSlotPage = {
+      async generateViewport(_props: unknown, parent: Promise<unknown>) {
+        parentViewports.push({ source: "first page", viewport: await parent });
+        return { maximumScale: 7, minimumScale: 0.5 };
+      },
+    };
+    const secondSlotPage = {
+      async generateViewport(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        const viewport = await parent;
+        parentViewports.push({ source: "second page", viewport });
+        return { initialScale: viewport.minimumScale === 0.5 ? 4 : 5 };
+      },
+    };
+    const primaryPage = {
+      async generateViewport(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        const viewport = await parent;
+        parentViewports.push({ source: "primary page", viewport });
+        return { maximumScale: viewport.initialScale === 4 ? 2 : 9 };
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [{ viewport: { viewportFit: "cover" } }],
+      metadataRoutes: [],
+      pageModule: primaryPage,
+      parallelRoutes: [
+        {
+          layoutModules: [firstSlotLayout],
+          pageModule: firstSlotPage,
+          routeSegments: ["dashboard"],
+        },
+        {
+          pageModule: secondSlotPage,
+          routeSegments: ["dashboard"],
+        },
+      ],
+      params: {},
+      routePath: "/dashboard",
+      routeSegments: ["dashboard"],
+    });
+
+    expect(parentViewports).toEqual([
+      {
+        source: "first layout",
+        viewport: {
+          colorScheme: null,
+          initialScale: 1,
+          themeColor: null,
+          viewportFit: "cover",
+          width: "device-width",
+        },
+      },
+      {
+        source: "first page",
+        viewport: {
+          colorScheme: null,
+          height: 111,
+          initialScale: 1,
+          themeColor: null,
+          viewportFit: "cover",
+          width: "device-width",
+        },
+      },
+      {
+        source: "second page",
+        viewport: {
+          colorScheme: null,
+          height: 111,
+          initialScale: 1,
+          maximumScale: 7,
+          minimumScale: 0.5,
+          themeColor: null,
+          viewportFit: "cover",
+          width: "device-width",
+        },
+      },
+      {
+        source: "primary page",
+        viewport: {
+          colorScheme: null,
+          height: 111,
+          initialScale: 4,
+          maximumScale: 7,
+          minimumScale: 0.5,
+          themeColor: null,
+          viewportFit: "cover",
+          width: "device-width",
+        },
+      },
+    ]);
+    expect(result.viewport).toMatchObject({
+      height: 111,
+      initialScale: 4,
+      maximumScale: 2,
+      minimumScale: 0.5,
+      viewportFit: "cover",
+    });
   });
 
   it("bubbles layout metadata errors", async () => {
