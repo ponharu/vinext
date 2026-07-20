@@ -182,7 +182,7 @@ type PreparedViewportBranch = {
 export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHeadModule>(
   options: ResolveActiveParallelRouteHeadInputsOptions<TModule>,
 ): ActiveParallelRouteHeadInput<TModule>[] {
-  return Object.entries(options.slots ?? {}).map(([slotKey, slot]) => {
+  const inputs = Object.entries(options.slots ?? {}).map(([slotKey, slot]) => {
     const ownerTreePosition = options.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0;
     const ownerParams = resolveAppPageSegmentParams(
       options.routeSegments,
@@ -281,6 +281,7 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
       ownerTreePosition,
     };
   });
+  return inputs.sort((left, right) => right.ownerTreePosition - left.ownerTreePosition);
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {

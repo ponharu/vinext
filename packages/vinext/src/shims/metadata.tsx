@@ -164,7 +164,7 @@ function resolveThemeColor(themeColor: Viewport["themeColor"]): ResolvedViewport
   return descriptors.map((descriptor) =>
     typeof descriptor === "string"
       ? { color: descriptor }
-      : { color: descriptor.color, ...(descriptor.media ? { media: descriptor.media } : {}) },
+      : { color: descriptor.color, media: descriptor.media },
   );
 }
 

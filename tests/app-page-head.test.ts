@@ -682,6 +682,25 @@ describe("app page head resolution", () => {
     ]);
   });
 
+  it("orders nested slot head inputs like Next.js's children-first tree walk", () => {
+    const outerFirst = {};
+    const outerSecond = {};
+    const inner = {};
+
+    const inputs = resolveActiveParallelRouteHeadInputs({
+      layoutTreePositions: [0, 2],
+      params: {},
+      routeSegments: ["dashboard", "settings"],
+      slots: {
+        outerFirst: { layoutIndex: 0, page: outerFirst },
+        outerSecond: { layoutIndex: 0, page: outerSecond },
+        inner: { layoutIndex: 1, page: inner },
+      },
+    });
+
+    expect(inputs.map((input) => input.head.pageModule)).toEqual([inner, outerFirst, outerSecond]);
+  });
+
   it("carries slot-local not-found metadata with owner-scoped params", () => {
     const slotNotFound = {};
 

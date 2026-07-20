@@ -3561,6 +3561,13 @@ describe("ViewportHead rendering", () => {
     expect(result.themeColor).toEqual([{ color: "#fff" }]);
   });
 
+  it("preserves an undefined media field on a theme-color descriptor", () => {
+    // Next.js's resolveThemeColor copies the descriptor fields explicitly:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-basics.ts
+    const result = mergeViewport([{ themeColor: { color: "#000" } }]);
+    expect(result.themeColor).toEqual([{ color: "#000", media: undefined }]);
+  });
+
   it("renders viewport meta even when only themeColor is provided (defaults injected)", () => {
     const merged = mergeViewport([{ themeColor: "#000" }]);
     const html = renderToStaticMarkup(React.createElement(ViewportHead, { viewport: merged }));
