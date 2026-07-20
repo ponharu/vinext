@@ -6156,10 +6156,12 @@ export const loadServerActionClient = ${
             const result = transformWrapExport(code, ast, {
               runtime: (value: string, name: string) => {
                 const runtimeOptions: string[] = [];
-                const acceptsSecondArgument = secondArgumentUsage.get(value);
-                if (acceptsSecondArgument !== undefined) {
-                  runtimeOptions.push(`acceptsSecondArgument: ${acceptsSecondArgument}`);
-                }
+                // A local declaration gives us its exact parameter shape. For
+                // opaque exports (for example `export { fn } from "./impl"`),
+                // match Next.js's unknown-signature behavior and conservatively
+                // treat every argument as used.
+                const acceptsSecondArgument = secondArgumentUsage.get(value) ?? true;
+                runtimeOptions.push(`acceptsSecondArgument: ${acceptsSecondArgument}`);
                 if (name === "default" && isAppPageModule) {
                   runtimeOptions.push("appPageDefaultExport: true");
                 }

@@ -69,6 +69,23 @@ export async function generateMetadata(_props, parent = fallbackParent) {
     expect(result.code).toContain("{ acceptsSecondArgument: true }");
   });
 
+  it("conservatively passes parent to an opaque file-level re-export", async () => {
+    const transform = getUseCacheTransform();
+    const result = (await transform(
+      `
+"use cache";
+export { generateMetadata } from "./metadata.js";
+`,
+      "/app/page.js",
+    )) as { code: string };
+
+    // Next.js records all arguments as used when a cache export's declaration
+    // cannot be analyzed in the current module.
+    expect(result.code).toContain(
+      'registerCachedFunction($$import_generateMetadata, "/app/page.js:generateMetadata", "", { acceptsSecondArgument: true })',
+    );
+  });
+
   it("records that a cached function without a declared parent omits the second argument", async () => {
     const transform = getUseCacheTransform();
     const result = (await transform(
